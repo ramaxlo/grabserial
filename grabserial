@@ -13,6 +13,11 @@
 #  * buffer output chars??
 #
 # CHANGELOG:
+#  2015.03.10 - Version 1.8.0 - add -o option for saving output to a file
+#    add -T option for absolute times. Both contributed by ramaxlo
+#  2015.03.10 - Version 1.7.1 - add line feed to instantpat result line
+#  2014.09.28 - Version 1.7.0 - add option for force reset for USB serial
+#    contributed by John Mehaffey <mehaf@gedanken.com>
 #  2014.01.07 - Version 1.6.0 - add option for exiting based on a
 #    mid-line pattern (quitpat). Simeon Miteff <simeon.miteff@gmail.com>
 #  2013.12.19 - Version 1.5.2 - verify Windows ports w/ serial.tools.list_ports
@@ -21,15 +26,13 @@
 #  2011.12.19 - Version 1.5.0 - add options for mid-line time capture
 #    (instantpat) and base time from launch of program instead of
 #    first char seen (launchtime) - contributed by Kent Borg
-#
-#  2011-09-24  better time output and time delta
+#  2011-09-24 - better time output and time delta
 #    Constantine Shulyupin <const@makelinux.com>
-#
 #  2008-06-02 - Version 1.1.0 add support for sending a command to
 #    the serial port before grabbing output
 
 MAJOR_VERSION=1
-MINOR_VERSION=6
+MINOR_VERSION=8
 REVISION=0
 
 import os, sys
@@ -56,16 +59,17 @@ options:
     -p, --parity=<val>     Set the parity (default N)
     -s, --stopbits=<val>   Set the stopbits (default 1)
     -x, --xonxoff          Enable software flow control (default off)
-    -r, --rtscts           Enable RTC/CTS flow control (default off)
+    -r, --rtscts           Enable RTS/CTS flow control (default off)
+    -f, --force-reset      Force pyserial to reset device parameters
     -e, --endtime=<secs>   End the program after the specified seconds have
                            elapsed.
     -c, --command=<cmd>    Send a command to the port before reading
     -t, --time             Print time for each line received.  The time is
                            when the first character of each line is
                            received by %s
-    -T, --systime          Print system time for each line received. The time is
-                           when the first character of each line is
-                           received by %s
+    -T, --systime          Print system time for each line received. The time
+                           is the absolute local time when the first character
+                           of each line is received by %s
     -m, --match=<pat>      Specify a regular expression pattern to match to
                            set a base time.  Time values for lines after the
                            line matching the pattern will be relative to
@@ -75,7 +79,7 @@ options:
     -q, --quitpat=<pat>    Specify a regular expression pattern to end the
                            program.  Works mid-line.
     -l, --launchtime       Set base time from launch of program.
-    -f, --file=<name>      Store read data to file.
+    -o, --output=<name>    Output data to the named file.
     -v, --verbose          Show verbose runtime messages
     -V, --version          Show version number and exit
 
@@ -105,7 +109,7 @@ def main():
 	# parse the command line options
 	try:
 		opts, args = getopt.getopt(sys.argv[1:],
-			"hli:d:b:w:p:s:xrc:tTm:e:f:vVq:", [
+			 "hli:d:b:w:p:s:xrfc:tTm:e:o:vVq:", [
 				"help",
 				"launchtime",
 				"instantpat=",
@@ -116,12 +120,13 @@ def main():
 				"stopbits=",
 				"xonxoff",
 				"rtscts",
+				"force-reset",
 				"command=",
 				"time",
 				"systime",
 				"match=",
 				"endtime=",
-				"file=",
+				"output=",
 				"verbose",
 				"version",
 				"quitpat="])
@@ -130,13 +135,18 @@ def main():
 		print("Error parsing command line options")
 		usage(2)
 
-	device="/dev/ttyS0"
-	baudrate=115200
-	width=8
-	parity='N'
-	stopbits=1
-	xon=0
-	rtc=0
+	sd = serial.Serial()
+	sd.port="/dev/ttyS0"
+	sd.baudrate=115200
+	sd.bytesize=serial.EIGHTBITS
+	sd.parity=serial.PARITY_NONE
+	sd.stopbits=serial.STOPBITS_ONE
+	sd.xonxoff=False
+	sd.rtscts=False
+	sd.dsrdtr=False
+	# specify a read timeout of 1 second
+	sd.timeout=1
+	force = False
 	show_time = 0
 	show_systime = 0
 	basepat = ""
@@ -146,10 +156,8 @@ def main():
 	instanttime = None
 	outputfile = None
 	endtime = 0
+	outputfile = None
 	command = ""
-
-	# get a dummy instance for error checking
-	sd = serial.Serial()
 
 	for opt, arg in opts:
 		if opt in ["-h", "--help"]:
@@ -158,37 +166,49 @@ def main():
                         device = arg
 			if not device_exists(device):
 				print("Error: serial device '%s' does not exist" % device)
+			        sd.close()
 				usage(2)
+			sd.port = device
 		if opt in ["-b", "--baudrate"]:
-			baudrate = int(arg)
-			if baudrate not in sd.BAUDRATES:
+			baud = int(arg)
+			if baud not in sd.BAUDRATES:
 				print("Error: invalid baud rate '%d' specified" % baudrate)
 				print("Valid baud rates are: %s" % str(sd.BAUDRATES))
+			        sd.close()
 				sys.exit(3)
+			sd.baudrate = baud
                 if opt in ["-p", "--parity"]:
-			parity = arg.upper()
-			if parity not in sd.PARITIES:
-				print("Error: invalid parity '%s' specified" % parity)
+			par = arg.upper()
+			if par not in sd.PARITIES:
+				print("Error: invalid parity '%s' specified" % par)
 				print("Valid parities are: %s" % str(sd.PARITIES))
+			        sd.close()
 				sys.exit(3)
+			sd.parity = par
 		if opt in ["-w", "--width"]:
 			width = int(arg)
 			if width not in sd.BYTESIZES:
 				print("Error: invalid data bit width '%d' specified" % width)
 				print("Valid data bit widths are: %s" % str(sd.BYTESIZES))
+				sd.close()
 				sys.exit(3)
+			sd.bytesize = width
 		if opt in ["-s", "--stopbits"]:
-			stopbits = int(arg)
-			if stopbits not in sd.STOPBITS:
-				print("Error: invalid stopbits '%d' specified" % stopbits)
+			stop = int(arg)
+			if stop not in sd.STOPBITS:
+				print("Error: invalid stopbits '%d' specified" % stop)
 				print("Valid stopbits are: %s" % str(sd.STOPBITS))
+			        sd.close()
 				sys.exit(3)
+			sd.stopbits = stop
 		if opt in ["-c", "--command"]:
 			command = arg
 		if opt in ["-x", "--xonxoff"]:
-			xon = 1
-		if opt in ["-r", "--rtcdtc"]:
-			rtc = 1
+			sd.xonxoff = True
+		if opt in ["-r", "--rtscts"]:
+			sd.rtscts = True
+		if opt in ["-f", "--force-set"]:
+			force = True
 		if opt in ["-t", "--time"]:
 			show_time=1
 			show_systime=0
@@ -212,17 +232,21 @@ def main():
 				endtime = time.time()+float(endstr)
 			except:
 				print("Error: invalid endtime %s specified" % arg)
+			        sd.close()
 				sys.exit(3)
+		if opt in ["-o", "--output"]:
+			outputfile = arg
 		if opt in ["-v", "--verbose"]:
 			verbose=1
 		if opt in ["-V", "--version"]:
 			print("grabserial version %d.%d.%d" % (MAJOR_VERSION, MINOR_VERSION, REVISION))
+			sd.close()
 			sys.exit(0)
 
 	# if verbose, show what our settings are
-	vprint("Opening serial port %s" % device)
-	vprint("%d:%d%s%s:xonxoff=%d:rtcdtc=%d" % (baudrate, width,
-		 parity, stopbits, xon, rtc))
+	vprint("Opening serial port %s" % sd.port)
+	vprint("%d:%d%s%s:xonxoff=%d:rtscts=%d" % (sd.baudrate, sd.bytesize,
+		 sd.parity, sd.stopbits, sd.xonxoff, sd.rtscts))
 	if endtime:
 		vprint("Program will end in %s seconds" % endstr)
 	if show_time:
@@ -237,32 +261,40 @@ def main():
 		vprint("Instant pattern '%s' to exit program" % quitpat)
 	if outputfile:
 		try:
-			f = open(outputfile, "wb")
+			out = open(outputfile, "wb")
 		except IOError:
 			print("Can't open output file '%s'" % outputfile)
 			sys.exit(1)
-		vprint("Store data to '%s'" % outputfile)
+		vprint("Saving data to '%s'" % outputfile)
 
-	# now actually open and configure the requested serial port
-	# specify a read timeout of 1 second
-	s = serial.Serial(device, baudrate, width, parity, stopbits, 1,
-		xon, rtc)
-
-	# read from the serial port until something stops the program
 	prev1 = 0
 	linetime = 0
 	newline = 1
 	curline = ""
 	vprint("Use Control-C to stop...")
 
-	if command:
-		s.write(command + "\n")
-		s.flush()
+	if force:
+	# pyserial does not reconfigure the device if the settings
+	# don't change from the previous ones.  This causes issues
+	# with (at least) some USB serial converters
+		toggle = sd.xonxoff
+		sd.xonxoff = not toggle
+		sd.open()
+		sd.close()
+		sd.xonxoff = toggle
+	sd.open()
+	sd.flushInput()
+	sd.flushOutput()
 
+	if command:
+		sd.write(command + "\n")
+		sd.flush()
+
+	# read from the serial port until something stops the program
 	while(1):
 		try:
 			# read for up to 1 second
-			x = s.read()
+			x = sd.read()
 
 			# see if we're supposed to stop yet
 			if endtime and time.time()>endtime:
@@ -284,29 +316,31 @@ def main():
 				linetime = time.time()
 				elapsed = linetime-basetime
 				delta = elapsed-prev1
-				msg = "[%4.6f %2.6f] " % (elapsed, delta)
+				msg ="[%4.6f %2.6f] " % (elapsed, delta)
 				sys.stdout.write(msg)
 				if outputfile:
-					f.write(msg)
+					out.write(msg)
 				prev1 = elapsed
 				newline = 0
 
 			if show_systime and newline:
 				linetime = time.time()
-				linetimestr = time.strftime('%y-%m-%d %H:%M:%S', time.localtime(linetime))
+				linetimestr = time.strftime(
+					'%y-%m-%d %H:%M:%S',
+					time.localtime(linetime))
 				elapsed = linetime-basetime
 				delta = elapsed-prev1
 				msg = "[%s %2.6f] " % (linetimestr, delta)
 				sys.stdout.write(msg)
 				if outputfile:
-					f.write(msg)
+					out.write(msg)
 				prev1 = elapsed
 				newline = 0
 
 			# FIXTHIS - should I buffer the output here??
 			sys.stdout.write(x)
 			if outputfile:
-				f.write(x)
+				out.write(x)
 			curline += x
 
 			# watch for patterns
@@ -328,20 +362,22 @@ def main():
 				curline = ""
 			sys.stdout.flush()
 			if outputfile:
-				f.flush()
+				out.flush()
 		except:
 			break
 
-	s.close()
+	sd.close()
 	if instanttime:
 		instanttime_str = '%4.6f' % (instanttime-basetime)
-		msg = '\nThe instantpat: "' + instantpat + '", was matched at ' + instanttime_str
+		msg = '\nThe instantpat: "%s" was matched at %s\n' % \
+			(instantpat, instanttime_str)
 		sys.stdout.write(msg)
 		sys.stdout.flush()
 		if outputfile:
-			f.write(msg)
-			f.flush()
+			out.write(msg)
+			out.flush()
+
 	if outputfile:
-		f.close()
+		out.close()
 
 main()
